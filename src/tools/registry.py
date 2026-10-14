@@ -91,12 +91,13 @@ class ShellExecTool(TatsuTool):
     name = "shell_exec"
     description = (
         "Execute a shell command with a 30-second timeout. Captures stdout and stderr. "
-        "Destructive commands (rm, rmdir, delete, drop, format, dd, mkfs) require confirm=True."
+        "Allows process management (kill <PID>, ps, top, htop). "
+        "Destructive commands (rm, rmdir, dd, mkfs, sudo, shutdown, reboot) require confirm=True."
     )
     args_schema = ShellExecInput
 
     DESTRUCTIVE_PATTERN = re.compile(
-        r"\b(rm\s+-|rmdir\b|unlink\b|drop\s+database|format\b|dd\s+if|mkfs\b|del\s+/|erase\b)",
+        r"\b(rm\s+-|rmdir\b|unlink\b|drop\s+database|format\b|dd\s+if|mkfs\b|del\s+/|erase\b|sudo\b|shutdown\b|reboot\b|poweroff\b|init\s+0\b)",
         re.IGNORECASE,
     )
 

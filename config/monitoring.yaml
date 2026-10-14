@@ -1,0 +1,13 @@
+# ─── TATSU Proactive System Monitoring Configuration ─────────────────
+enabled: true
+check_interval_seconds: 10
+alert_cooldown_seconds: 60     # Do not repeat identical alert within cooldown period
+polite_mode: true              # Polite suggestion rather than abrupt interruption
+
+thresholds:
+  cpu_warning: 85.0            # Total CPU usage % threshold
+  cpu_sustain_seconds: 10      # Number of seconds CPU must remain high before alert
+  ram_critical: 95.0           # System RAM % threshold
+  disk_warning: 90.0           # Root filesystem usage % threshold
+  process_hung_cpu: 50.0       # Single process CPU % threshold
+  process_hung_seconds: 60     # Seconds single process must exceed threshold

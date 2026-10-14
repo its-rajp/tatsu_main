@@ -1,0 +1,8 @@
+# ─── TATSU Desktop Perception Configuration ────────────────────────────
+enabled: true
+ocr_language: "en"
+max_chars: 2000
+refresh_interval_seconds: 2    # How often to update context if idle
+privacy_mode: strict           # RAM-only processing; discard images immediately
+capture_scale: 1.0             # Resolution scale for fast OCR processing
+fallback_to_fullscreen: true   # If active window bounds cannot be isolated, capture main monitor

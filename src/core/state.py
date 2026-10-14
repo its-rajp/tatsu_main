@@ -14,6 +14,8 @@ class AgentState(TypedDict, total=False):
     tool_calls: List[Dict[str, Any]]
     observations: List[str]
     persona_config: Dict[str, Any]
+    screen_context: Optional[Dict[str, Any]]
+    system_health: Optional[Dict[str, Any]]
     final_response: Optional[str]
     error: Optional[str]
     turn_count: int

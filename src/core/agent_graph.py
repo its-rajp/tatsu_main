@@ -28,6 +28,20 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 CONFIG_PATH = BASE_DIR / "config" / "persona.yaml"
 OLLAMA_DEFAULT_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 
+_SCREEN_WATCHER = None
+
+
+def get_screen_watcher():
+    """Lazily initialize and return the ScreenWatcher instance."""
+    global _SCREEN_WATCHER
+    if _SCREEN_WATCHER is None:
+        try:
+            from src.perception.screen_watcher import ScreenWatcher
+            _SCREEN_WATCHER = ScreenWatcher()
+        except Exception:
+            _SCREEN_WATCHER = None
+    return _SCREEN_WATCHER
+
 
 def load_persona_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
     """Loads persona configuration from YAML."""
@@ -129,14 +143,35 @@ def _to_ollama_messages(messages: List[BaseMessage]) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def perceive_node(state: AgentState) -> Dict[str, Any]:
-    """Node 1: Perceive — Injects persona, role, and system instructions."""
+    """Node 1: Perceive — Injects persona, role, screen perception, and instructions."""
     persona = state.get("persona_config") or load_persona_config()
     current_task = state.get("current_task", "")
+
+    # Desktop Perception (Phase 1-A)
+    watcher = get_screen_watcher()
+    screen_context = None
+    screen_prompt_addition = ""
+    if watcher and getattr(watcher, "enabled", False):
+        try:
+            ctx = watcher.get_context_summary()
+            if ctx and (ctx.get("window_title") or ctx.get("visible_content")):
+                screen_context = ctx
+                w_title = ctx.get("window_title", "Unknown")
+                v_content = ctx.get("visible_content", "").strip()
+                snippet = v_content[:300] + ("..." if len(v_content) > 300 else "")
+                screen_prompt_addition = (
+                    f"\n[CURRENT SCREEN CONTEXT]: User is viewing \"{w_title}\". "
+                    f"Visible text snippet: \"{snippet}\"\n"
+                )
+        except Exception as e:
+            logger_err = f"Screen perception error: {e}"
+            screen_context = None
 
     system_prompt = (
         f"You are {persona.get('name', 'TATSU')}, a {persona.get('role', 'Sovereign Digital Companion')}.\n"
         f"Tone: {persona.get('tone', 'Professional, concise, proactive')}.\n"
         f"Security & Loyalty: {persona.get('loyalty_protocol', 'Only obey authenticated user.')}\n\n"
+        f"{screen_prompt_addition}"
         "You have direct access to tools for system inspection, shell execution, and file management.\n"
         "Guidelines:\n"
         "1. When the user asks for system stats, files, or shell tasks, use the appropriate tool.\n"
@@ -149,6 +184,7 @@ def perceive_node(state: AgentState) -> Dict[str, Any]:
         {
             "persona": persona.get("name"),
             "task": current_task,
+            "has_screen_context": bool(screen_context),
         },
         status="SUCCESS",
     )
@@ -170,6 +206,7 @@ def perceive_node(state: AgentState) -> Dict[str, Any]:
         "messages": messages,
         "tool_calls": [],
         "observations": state.get("observations", []),
+        "screen_context": screen_context,
         "turn_count": state.get("turn_count", 0) + 1,
     }
 
@@ -404,6 +441,8 @@ class TatsuAgent:
             "tool_calls": [],
             "observations": [],
             "persona_config": self.persona_config,
+            "screen_context": None,
+            "system_health": None,
             "turn_count": 0,
         }
 
