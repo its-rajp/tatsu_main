@@ -82,6 +82,8 @@ memory/cache/
 logs/tatsu_audit.jsonl
 logs/test_probe.txt
 logs/*.log
+data/
+data/*
 
 # Downloaded models (too large for git)
 models/

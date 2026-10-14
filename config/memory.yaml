@@ -1,0 +1,10 @@
+# ─── TATSU Long-Term Brain & Memory Configuration ───────────────────
+enabled: true
+episodic_retention_days: 30         # Auto-prune old interaction events
+max_episodes_per_session: 100       # Maximum episodes to retain per session
+enable_semantic_learning: true      # Automatically extract and store user/entity facts
+db_path: "./data/tatsu_memory.db"   # SQLite database for semantic graph & metadata
+chroma_db_dir: "./data/chroma_db"   # Local Chroma vector store directory
+collection_name: "tatsu_episodic_memory"
+embedding_model: "all-MiniLM-L6-v2"
+top_k_episodes: 3                   # Top similar past episodes to inject into prompt

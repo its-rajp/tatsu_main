@@ -43,6 +43,34 @@ def get_screen_watcher():
     return _SCREEN_WATCHER
 
 
+_EPISODIC_STORE = None
+_SEMANTIC_GRAPH = None
+
+
+def get_episodic_store():
+    """Lazily initialize and return the EpisodicMemoryStore instance."""
+    global _EPISODIC_STORE
+    if _EPISODIC_STORE is None:
+        try:
+            from src.memory.episodic_store import EpisodicMemoryStore
+            _EPISODIC_STORE = EpisodicMemoryStore()
+        except Exception:
+            _EPISODIC_STORE = None
+    return _EPISODIC_STORE
+
+
+def get_semantic_graph():
+    """Lazily initialize and return the SemanticKnowledgeGraph instance."""
+    global _SEMANTIC_GRAPH
+    if _SEMANTIC_GRAPH is None:
+        try:
+            from src.memory.semantic_graph import SemanticKnowledgeGraph
+            _SEMANTIC_GRAPH = SemanticKnowledgeGraph()
+        except Exception:
+            _SEMANTIC_GRAPH = None
+    return _SEMANTIC_GRAPH
+
+
 def load_persona_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
     """Loads persona configuration from YAML."""
     path = config_path or CONFIG_PATH
@@ -167,11 +195,39 @@ def perceive_node(state: AgentState) -> Dict[str, Any]:
             logger_err = f"Screen perception error: {e}"
             screen_context = None
 
+    # Long-Term Brain & Memory (Phase 2)
+    memory_context = {"episodes": [], "facts": []}
+    memory_prompt_addition = ""
+
+    ep_store = get_episodic_store()
+    if ep_store and current_task:
+        try:
+            episodes = ep_store.retrieve_similar(current_task, k=3)
+            if episodes:
+                memory_context["episodes"] = episodes
+                ep_text = "\n".join(f"- {e.get('content', '')}" for e in episodes if e.get("content"))
+                if ep_text:
+                    memory_prompt_addition += f"\n[RELEVANT PAST CONVERSATIONS]:\n{ep_text}\n"
+        except Exception:
+            pass
+
+    sem_graph = get_semantic_graph()
+    if sem_graph and current_task:
+        try:
+            facts = sem_graph.infer_context(current_task)
+            if facts:
+                memory_context["facts"] = facts
+                facts_text = "\n".join(f"- {f}" for f in facts)
+                memory_prompt_addition += f"\n[KNOWN FACTS ABOUT USER/ENVIRONMENT]:\n{facts_text}\n"
+        except Exception:
+            pass
+
     system_prompt = (
         f"You are {persona.get('name', 'TATSU')}, a {persona.get('role', 'Sovereign Digital Companion')}.\n"
         f"Tone: {persona.get('tone', 'Professional, concise, proactive')}.\n"
         f"Security & Loyalty: {persona.get('loyalty_protocol', 'Only obey authenticated user.')}\n\n"
         f"{screen_prompt_addition}"
+        f"{memory_prompt_addition}"
         "You have direct access to tools for system inspection, shell execution, and file management.\n"
         "Guidelines:\n"
         "1. When the user asks for system stats, files, or shell tasks, use the appropriate tool.\n"
@@ -185,6 +241,8 @@ def perceive_node(state: AgentState) -> Dict[str, Any]:
             "persona": persona.get("name"),
             "task": current_task,
             "has_screen_context": bool(screen_context),
+            "recalled_episodes": len(memory_context["episodes"]),
+            "recalled_facts": len(memory_context["facts"]),
         },
         status="SUCCESS",
     )
@@ -207,6 +265,7 @@ def perceive_node(state: AgentState) -> Dict[str, Any]:
         "tool_calls": [],
         "observations": state.get("observations", []),
         "screen_context": screen_context,
+        "memory_context": memory_context,
         "turn_count": state.get("turn_count", 0) + 1,
     }
 
@@ -364,12 +423,34 @@ def execute_node(state: AgentState) -> Dict[str, Any]:
 
 
 def report_node(state: AgentState) -> Dict[str, Any]:
-    """Node 4: Report — Formats final response for text/voice synthesis."""
+    """Node 4: Report — Formats final response and writes to persistent memory."""
     final_resp = state.get("final_response") or ""
     observations = state.get("observations", [])
+    current_task = state.get("current_task", "")
 
     if not final_resp and observations:
         final_resp = observations[-1]
+
+    # Store interaction in episodic memory
+    ep_store = get_episodic_store()
+    if ep_store and current_task and final_resp:
+        try:
+            interaction_summary = f"User asked: {current_task} -> Agent answered: {final_resp}"
+            ep_store.store_event(
+                event_type="interaction",
+                content=interaction_summary,
+                metadata={"task": current_task},
+            )
+        except Exception:
+            pass
+
+    # Extract and learn semantic relationships from the exchange
+    sem_graph = get_semantic_graph()
+    if sem_graph and current_task:
+        try:
+            sem_graph.extract_and_learn_facts(current_task)
+        except Exception:
+            pass
 
     audit_log(
         "REPORT",
@@ -443,6 +524,7 @@ class TatsuAgent:
             "persona_config": self.persona_config,
             "screen_context": None,
             "system_health": None,
+            "memory_context": None,
             "turn_count": 0,
         }
 

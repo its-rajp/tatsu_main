@@ -16,6 +16,15 @@ psutil
 sounddevice
 numpy
 
+# ─── TATSU Phase 1: Desktop Perception & Proactivity ───────────────────────
+mss
+# paddleocr
+
+# ─── TATSU Phase 2: Long-Term Brain (Memory & Knowledge Graph) ─────────────
+chromadb
+networkx
+sentence-transformers
+
 # ─── Legacy TATSU Dependencies (Original Codebase) ────────────────────────
 PyQt6
 PyQt6-WebEngine
