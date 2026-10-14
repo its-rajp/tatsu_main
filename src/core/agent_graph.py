@@ -22,7 +22,7 @@ from langchain_core.messages import (
 from langgraph.graph import END, StateGraph
 
 from src.core.state import AgentState
-from src.tools.registry import AVAILABLE_TOOLS, audit_log
+from src.tools.registry import AVAILABLE_TOOLS, RiskLevel, audit_log
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 CONFIG_PATH = BASE_DIR / "config" / "persona.yaml"
@@ -69,6 +69,21 @@ def get_semantic_graph():
         except Exception:
             _SEMANTIC_GRAPH = None
     return _SEMANTIC_GRAPH
+
+
+_VOICE_AUTH = None
+
+
+def get_voice_authenticator():
+    """Lazily initialize and return the VoiceAuthenticator instance."""
+    global _VOICE_AUTH
+    if _VOICE_AUTH is None:
+        try:
+            from src.security.biometric_auth import get_authenticator
+            _VOICE_AUTH = get_authenticator()
+        except Exception:
+            _VOICE_AUTH = None
+    return _VOICE_AUTH
 
 
 def load_persona_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
@@ -222,17 +237,35 @@ def perceive_node(state: AgentState) -> Dict[str, Any]:
         except Exception:
             pass
 
+    # Phase 4: Authentication status injection
+    is_authenticated = state.get("is_authenticated", False)
+    auth_user = state.get("auth_user")
+    auth_prompt = ""
+    voice_auth = get_voice_authenticator()
+    if voice_auth:
+        auth_prompt = voice_auth.get_auth_status_prompt()
+    elif is_authenticated:
+        auth_prompt = f"[AUTH STATUS]: User '{auth_user or 'unknown'}' is VERIFIED. Full tool access granted."
+    else:
+        auth_prompt = (
+            "[AUTH STATUS]: User is UNVERIFIED. "
+            "Politely decline any request involving data modification, system changes, "
+            "or external communication. Offer read-only information instead."
+        )
+
     system_prompt = (
         f"You are {persona.get('name', 'TATSU')}, a {persona.get('role', 'Sovereign Digital Companion')}.\n"
         f"Tone: {persona.get('tone', 'Professional, concise, proactive')}.\n"
         f"Security & Loyalty: {persona.get('loyalty_protocol', 'Only obey authenticated user.')}\n\n"
+        f"{auth_prompt}\n\n"
         f"{screen_prompt_addition}"
         f"{memory_prompt_addition}"
         "You have direct access to tools for system inspection, shell execution, and file management.\n"
         "Guidelines:\n"
         "1. When the user asks for system stats, files, or shell tasks, use the appropriate tool.\n"
         "2. Do not invent outputs. Always inspect or execute tools when action or data is required.\n"
-        "3. Keep answers concise, factual, and sovereign."
+        "3. Keep answers concise, factual, and sovereign.\n"
+        "4. If user is UNVERIFIED, decline data modification/system changes. Offer read-only info."
     )
 
     audit_log(
@@ -381,10 +414,20 @@ def reason_node(state: AgentState) -> Dict[str, Any]:
 
 
 def execute_node(state: AgentState) -> Dict[str, Any]:
-    """Node 3: Execute — Runs selected tool(s) safely and records observations."""
+    """Node 3: Execute — Runs selected tool(s) safely with RBAC enforcement.
+
+    Phase 4: Tools with HIGH or MEDIUM risk_level require is_authenticated == True.
+    Unauthenticated sessions can only use LOW risk tools.
+    """
     tool_calls = state.get("tool_calls", [])
     observations = list(state.get("observations", []))
     messages = list(state.get("messages", []))
+    is_authenticated = state.get("is_authenticated", False)
+
+    # Also check live session state from the authenticator
+    voice_auth = get_voice_authenticator()
+    if voice_auth and voice_auth.session.is_session_valid():
+        is_authenticated = True
 
     for tc in tool_calls:
         tool_name = tc.get("name")
@@ -395,13 +438,27 @@ def execute_node(state: AgentState) -> Dict[str, Any]:
         if not tool:
             result = f"Error: Tool '{tool_name}' not found in registry."
         else:
-            try:
-                # Pydantic schema validation
-                validated_args = tool.args_schema(**args).model_dump()
-                result = tool.execute(validated_args)
-            except Exception as e:
-                result = f"Error validating/executing tool '{tool_name}': {str(e)}"
-                audit_log("TOOL_EXECUTION", {"tool": tool_name, "error": str(e)}, status="VALIDATION_ERROR")
+            # --- Phase 4: RBAC Enforcement ---
+            tool_risk = getattr(tool, "risk_level", RiskLevel.LOW)
+            if tool_risk in (RiskLevel.HIGH, RiskLevel.MEDIUM) and not is_authenticated:
+                result = (
+                    f"Security Violation: Biometric authentication required for "
+                    f"'{tool_name}' (risk level: {tool_risk}). "
+                    f"Please verify your identity first."
+                )
+                audit_log(
+                    "RBAC_BLOCKED",
+                    {"tool": tool_name, "risk_level": tool_risk, "authenticated": False},
+                    status="BLOCKED",
+                )
+            else:
+                try:
+                    # Pydantic schema validation
+                    validated_args = tool.args_schema(**args).model_dump()
+                    result = tool.execute(validated_args)
+                except Exception as e:
+                    result = f"Error validating/executing tool '{tool_name}': {str(e)}"
+                    audit_log("TOOL_EXECUTION", {"tool": tool_name, "error": str(e)}, status="VALIDATION_ERROR")
 
         obs_entry = f"[{tool_name}] -> {result}"
         observations.append(obs_entry)
@@ -514,8 +571,14 @@ class TatsuAgent:
         self.persona_config = load_persona_config(config_path)
         self.graph = build_agent_graph()
 
-    def process(self, query: str) -> str:
-        """Processes a single task or query through the full agent loop."""
+    def process(self, query: str, is_authenticated: bool = False, auth_user: str = None) -> str:
+        """Processes a single task or query through the full agent loop.
+
+        Args:
+            query: The user's natural language request.
+            is_authenticated: Whether the user has been biometrically verified.
+            auth_user: Name of the authenticated user (if verified).
+        """
         initial_state: AgentState = {
             "current_task": query,
             "messages": [HumanMessage(content=query)],
@@ -527,6 +590,8 @@ class TatsuAgent:
             "memory_context": None,
             "current_plan_steps": None,
             "turn_count": 0,
+            "is_authenticated": is_authenticated,
+            "auth_user": auth_user,
         }
 
         final_state = self.graph.invoke(initial_state)

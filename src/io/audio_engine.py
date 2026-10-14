@@ -76,7 +76,7 @@ def _check_capability_report() -> dict:
 
 
 class TatsuAudio:
-    """Full-local audio pipeline: wake word → STT → (agent) → TTS."""
+    """Full-local audio pipeline: wake word → auth → STT → (agent) → TTS."""
 
     # Audio capture parameters
     SAMPLE_RATE = 16000
@@ -86,6 +86,7 @@ class TatsuAudio:
     RECORD_TIMEOUT_S = 8         # max seconds to record after wake
     SILENCE_CUTOFF_S = 1.5       # seconds of silence to auto-stop recording
     SILENCE_THRESHOLD = 500      # amplitude threshold for silence detection
+    AUTH_CLIP_SECONDS = 2.0      # seconds of speech to capture for voice auth
 
     def __init__(
         self,
@@ -94,10 +95,26 @@ class TatsuAudio:
         whisper_device: str = "cpu",
         whisper_compute_type: str = "int8",
         piper_voice: Optional[str] = None,
+        enable_voice_auth: bool = True,
     ):
         self.wake_word = wake_word
         self.capabilities = _check_capability_report()
         self._running = False
+        self._enable_voice_auth = enable_voice_auth
+
+        # ----------- Voice Authentication (Phase 4) -----------
+        self._voice_auth = None
+        if enable_voice_auth:
+            try:
+                from src.security.biometric_auth import get_authenticator
+                self._voice_auth = get_authenticator()
+                if self._voice_auth.available:
+                    print("[Audio] Voice authentication engine loaded (Resemblyzer).")
+                else:
+                    print("[Audio] Voice auth initialized (Resemblyzer not installed — auth bypass active).")
+            except Exception as e:
+                print(f"[Audio] Voice auth init failed ({e}); running without biometric gate.")
+                self._voice_auth = None
 
         # ----------- Wake Word -----------
         self._oww_model = None
@@ -133,6 +150,110 @@ class TatsuAudio:
         if _TTS_OK:
             self._piper_available = True
             print("[Audio] Piper TTS engine available.")
+
+    # ------------------------------------------------------------------
+    # Voice Authentication Helpers (Phase 4)
+    # ------------------------------------------------------------------
+
+    def _capture_auth_clip(self) -> Optional[np.ndarray]:
+        """Capture a short audio clip specifically for voice authentication.
+        Uses the first AUTH_CLIP_SECONDS of speech following wake word.
+        """
+        if not _SD_OK:
+            return None
+
+        chunk_samples = int(self.SAMPLE_RATE * 0.1)  # 100ms chunks
+        frames = []
+        max_chunks = int(self.AUTH_CLIP_SECONDS / 0.1)
+
+        audio_queue: queue.Queue = queue.Queue()
+
+        def _callback(indata, frame_count, time_info, status):
+            audio_queue.put(indata.copy())
+
+        try:
+            with sd.InputStream(
+                samplerate=self.SAMPLE_RATE,
+                channels=self.CHANNELS,
+                dtype=self.DTYPE,
+                blocksize=chunk_samples,
+                callback=_callback,
+            ):
+                for _ in range(max_chunks):
+                    try:
+                        data = audio_queue.get(timeout=0.2)
+                    except queue.Empty:
+                        continue
+                    frames.append(data)
+        except Exception as e:
+            print(f"[Audio] Auth clip capture error: {e}")
+            return None
+
+        if not frames:
+            return None
+        return np.concatenate(frames, axis=0).flatten()
+
+    def verify_speaker(self, audio_clip: Optional[np.ndarray] = None) -> bool:
+        """Run voice-print verification on the given or freshly captured audio.
+
+        Returns True if:
+          - Voice auth is disabled or unavailable (bypass mode)
+          - Session is already valid (within timeout window)
+          - Speaker matches an enrolled, authorized user
+        """
+        if not self._voice_auth:
+            return True  # No auth engine — bypass
+
+        if not self._voice_auth.available:
+            return True  # Resemblyzer not installed — bypass for dev
+
+        # Check if session is still valid from a previous auth
+        if self._voice_auth.session.is_session_valid():
+            return True
+
+        # Check lockout
+        if self._voice_auth.session.is_locked_out():
+            self.speak("Access denied. System is locked due to repeated failures. Please wait.")
+            return False
+
+        # Need to verify
+        if audio_clip is None:
+            print("🔐 Verifying identity...")
+            audio_clip = self._capture_auth_clip()
+
+        if audio_clip is None or len(audio_clip) < 1600:
+            self.speak("Access denied. Could not capture voice sample.")
+            return False
+
+        result = self._voice_auth.authenticate(audio_clip)
+
+        if result.get("success"):
+            user = result.get("user", "unknown")
+            score = result.get("score", 0)
+            print(f"✅ Identity verified: {user} (confidence: {score:.2f})")
+            return True
+        else:
+            reason = result.get("reason", "unknown")
+            failures = result.get("failures", 0)
+            if reason == "locked_out":
+                remaining = result.get("remaining_seconds", 0)
+                self.speak(f"Access denied. System locked for {remaining} seconds.")
+            else:
+                self.speak("Access denied. Identity not recognized.")
+                print(f"🚫 Auth failed: {reason} (attempts: {failures})")
+            return False
+
+    @property
+    def auth_session(self):
+        """Access the current authentication session (for state injection)."""
+        if self._voice_auth:
+            return self._voice_auth.session
+        return None
+
+    @property
+    def voice_authenticator(self):
+        """Access the VoiceAuthenticator instance."""
+        return self._voice_auth
 
     # ------------------------------------------------------------------
     # Public API
@@ -300,7 +421,11 @@ class TatsuAudio:
                 sd.wait()
 
     def listen_once(self) -> str:
-        """Full pipeline: wait for wake word → record → transcribe → return text.
+        """Full pipeline: wake word → voice auth → record → transcribe → return text.
+
+        Phase 4 Enhancement: After wake word detection, the first 2 seconds of
+        speech are used for voice-print verification. If the speaker is not
+        recognized, the command is rejected before reaching the agent core.
         Falls back to text input if audio subsystems are unavailable.
         """
         # Check if we have minimal audio capability
@@ -311,6 +436,13 @@ class TatsuAudio:
         detected = self.listen_for_wake_word()
         if not detected:
             return ""
+
+        # --- Phase 4: Voice Authentication Gate ---
+        # Verify speaker identity before processing the command.
+        # If session is already authenticated (within timeout), skip re-verification.
+        if self._enable_voice_auth and self._voice_auth:
+            if not self.verify_speaker():
+                return ""  # Rejected — do not proceed to STT
 
         print("🔴 Recording... (speak now)")
         audio = self.record_speech()

@@ -21,3 +21,7 @@ class AgentState(TypedDict, total=False):
     final_response: Optional[str]
     error: Optional[str]
     turn_count: int
+    # Phase 4: Biometric Authentication
+    is_authenticated: bool
+    auth_user: Optional[str]
+

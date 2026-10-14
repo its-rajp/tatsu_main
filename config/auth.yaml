@@ -1,0 +1,22 @@
+# ─── TATSU Phase 4: Biometric Authentication Configuration ─────────────────
+# All voice-print processing is LOCAL ONLY. No cloud APIs.
+
+# Users authorized to command TATSU
+authorized_users:
+  - "raj"
+
+# Cosine similarity threshold for voice-print match
+# Higher = stricter (0.6–0.85 typical range for speaker verification)
+similarity_threshold: 0.75
+
+# Maximum consecutive verification failures before lockout
+max_failures_before_lockout: 3
+
+# Duration of lockout period after max failures (seconds)
+lockout_duration_seconds: 60
+
+# Path to stored user voice embeddings (relative to project root)
+embeddings_path: "data/user_embeddings.json"
+
+# Session authentication timeout — re-verify after N minutes of inactivity
+session_timeout_minutes: 30

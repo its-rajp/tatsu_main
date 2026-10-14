@@ -585,6 +585,73 @@ class FileArchiveTool(TatsuTool):
 
 
 # ---------------------------------------------------------------------------
+# 8. Smart Home / Hardware Bridge Tools (Phase 4)
+# ---------------------------------------------------------------------------
+
+_HARDWARE_BRIDGE = None
+
+
+def _get_hardware_bridge():
+    global _HARDWARE_BRIDGE
+    if _HARDWARE_BRIDGE is None:
+        from src.integration.hardware_bridge import get_hardware_bridge
+        _HARDWARE_BRIDGE = get_hardware_bridge()
+    return _HARDWARE_BRIDGE
+
+
+class SmartHomeControlInput(BaseModel):
+    device: str = Field(..., description="Device name or ID (e.g., 'desk_lamp', 'ceiling_fan').")
+    action: str = Field(..., description="Target state: 'on', 'off', 'locked', 'unlocked', or numeric (temp/volume).")
+
+
+class SmartHomeControlTool(TatsuTool):
+    name = "control_smart_home"
+    description = (
+        "Control a smart home device (light, fan, lock, climate, audio). "
+        "Set state to on/off/locked/unlocked or numeric value for temperature/volume."
+    )
+    args_schema = SmartHomeControlInput
+    risk_level = RiskLevel.MEDIUM
+
+    def execute(self, args: Dict[str, Any]) -> str:
+        device = args.get("device", "")
+        action = args.get("action", "")
+        bridge = _get_hardware_bridge()
+        result = bridge.set_device_state(device, action)
+        if result.get("success"):
+            msg = (
+                f"Device '{result['device']}' changed from '{result['old_state']}' "
+                f"to '{result['new_state']}' [{result['mode']}]"
+            )
+            audit_log("TOOL_EXECUTION", {"tool": self.name, "device": device, "action": action}, status="SUCCESS")
+        else:
+            msg = f"Device control failed: {result.get('error', 'unknown')}"
+            audit_log("TOOL_EXECUTION", {"tool": self.name, "error": msg}, status="ERROR")
+        return msg
+
+
+class SmartHomeStatusInput(BaseModel):
+    device: str = Field(default="", description="Device name/ID to query, or empty to list all.")
+
+
+class SmartHomeStatusTool(TatsuTool):
+    name = "smart_home_status"
+    description = "Query the state of a smart home device, or list all devices and their states."
+    args_schema = SmartHomeStatusInput
+    risk_level = RiskLevel.LOW
+
+    def execute(self, args: Dict[str, Any]) -> str:
+        device = args.get("device", "").strip()
+        bridge = _get_hardware_bridge()
+        if device:
+            result = bridge.get_device_state(device)
+        else:
+            result = bridge.list_devices()
+        audit_log("TOOL_EXECUTION", {"tool": self.name, "device": device or "ALL"}, status="SUCCESS")
+        return json.dumps(result, indent=2)
+
+
+# ---------------------------------------------------------------------------
 # Global Registry Map
 # ---------------------------------------------------------------------------
 
@@ -600,4 +667,7 @@ AVAILABLE_TOOLS: Dict[str, TatsuTool] = {
     "file_search": FileSearchTool(),
     "file_organize": FileOrganizeTool(),
     "file_archive": FileArchiveTool(),
+    "control_smart_home": SmartHomeControlTool(),
+    "smart_home_status": SmartHomeStatusTool(),
 }
+

@@ -25,7 +25,10 @@ chromadb
 networkx
 sentence-transformers
 
-# ─── Legacy TATSU Dependencies (Original Codebase) ────────────────────────
+# ─── TATSU Phase 4: Biometric Authentication & Physical Control ────────────
+resemblyzer
+scipy
+
 PyQt6
 PyQt6-WebEngine
 google-genai
