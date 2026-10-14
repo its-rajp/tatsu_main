@@ -37,6 +37,38 @@ proactive:
 ollama_model: "llama3.2:3b-instruct-q4_K_M"
 fallback_model: "qwen2.5:3b"
 
+# Voice Profile — British Sovereign Cadence (Piper / Alan)
+voice:
+  profile: "jarvis_british"
+  piper_model: "en_GB-alan-medium"
+  piper_voice_path: "data/piper_voices/en_GB-alan-medium.onnx"
+  piper_config_path: "data/piper_voices/en_GB-alan-medium.onnx.json"
+  length_scale: 1.05     # Slightly slower, deliberate cadence (1.0 is default)
+  noise_scale: 0.667     # Crisp synthetic authority, low breathiness
+  noise_w_scale: 0.8     # Composed, calm prosody
+  speaker_id: null
+  dynamic_cadence:
+    stressed: 1.15       # Slower and reassuring when under strain
+    excited: 0.95        # Snappy and rapid
+    nominal: 1.05        # Baseline calm British delivery
+
+# Polyglot Core — Hindi/English Multilingual Configuration
+polyglot:
+  enabled: true
+  default_language: "en"
+  supported_languages:
+    - "en"        # English
+    - "hi"        # Hindi (Devanagari)
+    - "hinglish"  # Conversational Hindi in Latin script
+  models:
+    en: "llama3.2:3b-instruct-q4_K_M"
+    hi: "aya-expanse:8b"
+    hinglish: "aya-expanse:8b"
+  tts:
+    en: "piper"
+    hi: "xtts_v2"
+    hinglish: "xtts_v2"
+
 # Workspace boundaries
 allowed_directories:
   - "."

@@ -24,4 +24,7 @@ class AgentState(TypedDict, total=False):
     # Phase 4: Biometric Authentication
     is_authenticated: bool
     auth_user: Optional[str]
+    # Phase 7: Polyglot Bilingual Support
+    detected_lang: Optional[str]
+    target_model: Optional[str]
 

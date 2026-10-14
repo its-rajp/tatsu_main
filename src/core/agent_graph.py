@@ -253,14 +253,21 @@ def perceive_node(state: AgentState) -> Dict[str, Any]:
             "or external communication. Offer read-only information instead."
         )
 
-    # Load error response templates from persona config
-    error_templates = persona.get("error_responses", {})
+    # Phase 7: Polyglot Language Detection & Prompt Calibration
+    from src.io.language_detector import detect_language, format_multilingual_prompt_guidance
+    detected_lang = state.get("detected_lang") or detect_language(current_task)
+    lang_guidance = format_multilingual_prompt_guidance(detected_lang, persona)
+
+    polyglot_cfg = persona.get("polyglot", {})
+    model_map = polyglot_cfg.get("models", {})
+    target_model = model_map.get(detected_lang, persona.get("ollama_model", "llama3.2:3b-instruct-q4_K_M"))
 
     system_prompt = (
         f"You are {persona.get('name', 'TATSU')}, a {persona.get('role', 'Sovereign Digital Companion')}.\n"
         f"Tone: {persona.get('tone', 'Professional, concise, proactive')}.\n"
         f"Security & Loyalty: {persona.get('loyalty_protocol', 'Only obey authenticated user.')}\n\n"
         f"{auth_prompt}\n\n"
+        f"{lang_guidance}\n\n"
         f"{screen_prompt_addition}"
         f"{memory_prompt_addition}"
         "You have direct access to tools for system inspection, shell execution, and file management.\n"
@@ -306,6 +313,8 @@ def perceive_node(state: AgentState) -> Dict[str, Any]:
         "screen_context": screen_context,
         "memory_context": memory_context,
         "turn_count": state.get("turn_count", 0) + 1,
+        "detected_lang": detected_lang,
+        "target_model": target_model,
     }
 
 
@@ -314,8 +323,8 @@ def reason_node(state: AgentState) -> Dict[str, Any]:
     persona = state.get("persona_config") or load_persona_config()
     messages = state.get("messages", [])
 
-    # Select best available model
-    preferred_model = persona.get("ollama_model", "llama3.2:3b-instruct-q4_K_M")
+    # Select best available model (honor multilingual routing)
+    preferred_model = state.get("target_model") or persona.get("ollama_model", "llama3.2:3b-instruct-q4_K_M")
     fallback_model = persona.get("fallback_model", "qwen2.5:3b")
 
     available_models = get_available_ollama_models()

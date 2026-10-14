@@ -96,6 +96,9 @@ class TatsuAudio:
         whisper_compute_type: str = "int8",
         piper_voice: Optional[str] = None,
         enable_voice_auth: bool = True,
+        length_scale: float = 1.05,
+        noise_scale: float = 0.667,
+        noise_w_scale: float = 0.8,
     ):
         self.wake_word = wake_word
         self.capabilities = _check_capability_report()
@@ -144,12 +147,29 @@ class TatsuAudio:
                 print(f"[Audio] Whisper init failed ({e}); STT unavailable.")
                 self._whisper = None
 
-        # ----------- TTS (Piper) -----------
-        self._piper_voice_path = piper_voice
+        # ----------- TTS (Piper & Voice Profile) -----------
+        # Default to Alan medium British model path if exists
+        default_alan = BASE_DIR / "data" / "piper_voices" / "en_GB-alan-medium.onnx"
+        if piper_voice:
+            self._piper_voice_path = Path(piper_voice)
+        elif default_alan.exists():
+            self._piper_voice_path = default_alan
+        else:
+            self._piper_voice_path = None
+
+        self.voice_config = {
+            "profile": "jarvis_british",
+            "model": "en_GB-alan-medium",
+            "length_scale": length_scale,      # Slower, measured cadence
+            "noise_scale": noise_scale,        # Clearer, authoritative synthetic tone
+            "noise_w_scale": noise_w_scale,    # Composed monotone prosody
+            "speaker_id": None,
+        }
+
         self._piper_available = False
         if _TTS_OK:
             self._piper_available = True
-            print("[Audio] Piper TTS engine available.")
+            print(f"[Audio] Piper TTS available (Profile: {self.voice_config['profile']}, cadence={length_scale}).")
 
     # ------------------------------------------------------------------
     # Voice Authentication Helpers (Phase 4)
@@ -365,12 +385,54 @@ class TatsuAudio:
             print(f"[Audio] Transcription error: {e}")
             return ""
 
-    def speak(self, text: str) -> None:
-        """Synthesizes speech from text using Piper TTS and plays it."""
+    def tune_cadence(self, emotional_state: str = "nominal") -> float:
+        """Dynamically adjust speech cadence (length_scale) based on user/system state.
+
+        - 'stressed': 1.15 (slower, reassuring pace)
+        - 'excited': 0.95 (faster, energetic delivery)
+        - 'nominal': 1.05 (calm, deliberate JARVIS delivery)
+        """
+        cadence_map = {
+            "stressed": 1.15,
+            "excited": 0.95,
+            "nominal": 1.05,
+            "urgent": 0.90,
+            "thoughtful": 1.10,
+        }
+        scale = cadence_map.get(str(emotional_state).lower(), 1.05)
+        self.voice_config["length_scale"] = scale
+        return scale
+
+    def speak_jarvis_style(self, text: str) -> None:
+        """Synthesize with sovereign British JARVIS cadence."""
+        self.speak(text, language="en")
+
+    def speak(self, text: str, language: Optional[str] = None) -> None:
+        """Synthesizes speech from text.
+
+        Supports bilingual routing:
+        - English ('en'): Piper tuned with British Alan model / macOS Daniel / console
+        - Hindi / Hinglish ('hi', 'hinglish'): XTTS-v2 / macOS Lekha / console
+        """
         if not text:
             return
 
-        # Try Piper TTS
+        if language is None:
+            try:
+                from src.io.language_detector import detect_language
+                language = detect_language(text)
+            except Exception:
+                language = "en"
+
+        # Route Hindi / Hinglish to multilingual handler
+        if language in ["hi", "hinglish"]:
+            try:
+                self._speak_polyglot(text, language=language)
+                return
+            except Exception as e:
+                print(f"[Audio] Polyglot TTS failed ({e}); falling back.")
+
+        # English / British Jarvis Delivery via Piper
         if self._piper_available:
             try:
                 self._speak_piper(text)
@@ -378,35 +440,75 @@ class TatsuAudio:
             except Exception as e:
                 print(f"[Audio] Piper TTS failed ({e}); trying macOS fallback.")
 
-        # Fallback: macOS `say` command
+        # Fallback: macOS `say` command with British voice or Lekha
         if sys.platform == "darwin":
             try:
-                subprocess.run(
-                    ["say", "-r", "190", text],
-                    timeout=30,
-                    capture_output=True,
-                )
+                voice_cmd = ["say"]
+                if language in ["hi", "hinglish"]:
+                    voice_cmd.extend(["-v", "Lekha", "-r", "180"])
+                else:
+                    voice_cmd.extend(["-v", "Daniel", "-r", "175"])
+                res = subprocess.run([*voice_cmd, text], timeout=30, capture_output=True)
+                if res.returncode == 0:
+                    return
+                # Generic fallback if specific voice not installed
+                subprocess.run(["say", "-r", "180", text], timeout=30, capture_output=True)
                 return
             except Exception as e:
                 print(f"[Audio] macOS say failed: {e}")
 
-        # Last resort: just print
-        print(f"[TATSU speaks]: {text}")
+        # Last resort: console output
+        print(f"[TATSU speaks ({language})]: {text}")
+
+    def _speak_polyglot(self, text: str, language: str = "hi") -> None:
+        """Synthesize Hindi/Hinglish speech using XTTS-v2 or macOS Lekha."""
+        # Check XTTS-v2
+        try:
+            from TTS.api import TTS
+            xtts_lang = "hi"
+            tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2")
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
+                tts.tts_to_file(text=text, file_path=tmp.name, language=xtts_lang)
+                if _SD_OK:
+                    import soundfile as sf
+                    data, sr = sf.read(tmp.name, dtype="float32")
+                    sd.play(data, sr)
+                    sd.wait()
+                    return
+        except Exception:
+            pass
+
+        # macOS Lekha voice for Hindi
+        if sys.platform == "darwin":
+            res = subprocess.run(["say", "-v", "Lekha", text], capture_output=True, timeout=20)
+            if res.returncode == 0:
+                return
+
+        print(f"[TATSU Polyglot ({language})]: {text}")
 
     def _speak_piper(self, text: str) -> None:
-        """Synthesize and play audio via piper-tts."""
+        """Synthesize and play audio via piper-tts using tuned British parameters."""
         if not _TTS_OK:
             raise RuntimeError("Piper not installed")
 
-        # Use piper CLI if the python bindings are complex
-        # piper --model <model> --output_file - | aplay -
         voice_arg = []
-        if self._piper_voice_path:
+        if self._piper_voice_path and Path(self._piper_voice_path).exists():
             voice_arg = ["--model", str(self._piper_voice_path)]
+
+        # Apply Varahamihira's tuned British cadence parameters
+        length_scale = str(self.voice_config.get("length_scale", 1.05))
+        noise_scale = str(self.voice_config.get("noise_scale", 0.667))
+        noise_w_scale = str(self.voice_config.get("noise_w_scale", 0.8))
+
+        cadence_args = [
+            "--length-scale", length_scale,
+            "--noise-scale", noise_scale,
+            "--noise-w", noise_w_scale,
+        ]
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
             proc = subprocess.run(
-                ["piper", *voice_arg, "--output_file", tmp.name],
+                ["piper", *voice_arg, *cadence_args, "--output_file", tmp.name],
                 input=text.encode("utf-8"),
                 capture_output=True,
                 timeout=15,
@@ -477,3 +579,42 @@ class TatsuAudio:
     def has_tts(self) -> bool:
         """True if TTS output is available (piper or macOS say)."""
         return self._piper_available or sys.platform == "darwin"
+
+
+# ---------------------------------------------------------------------------
+# Polyglot Voice Engine (Phase 7)
+# ---------------------------------------------------------------------------
+
+class PolyglotVoiceEngine:
+    """Multilingual voice engine coordinating British Jarvis Piper (English)
+    and XTTS-v2 / Indic fallback (Hindi & Hinglish).
+    """
+
+    def __init__(self, audio_engine: Optional[TatsuAudio] = None):
+        self.audio_engine = audio_engine or TatsuAudio()
+        self._xtts = None
+
+    def speak(self, text: str, language: Optional[str] = None) -> None:
+        """Synthesize and play speech in the target or detected language."""
+        if not text:
+            return
+        if language is None:
+            try:
+                from src.io.language_detector import detect_language
+                language = detect_language(text)
+            except Exception:
+                language = "en"
+        self.audio_engine.speak(text, language=language)
+
+    def speak_hindi(self, text: str) -> None:
+        """Synthesize speech explicitly in Hindi."""
+        self.speak(text, language="hi")
+
+    def speak_english(self, text: str) -> None:
+        """Synthesize speech explicitly in British English."""
+        self.speak(text, language="en")
+
+    def tune_cadence(self, emotional_state: str = "nominal") -> float:
+        """Tune vocal speed and tone."""
+        return self.audio_engine.tune_cadence(emotional_state)
+

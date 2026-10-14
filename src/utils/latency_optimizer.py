@@ -161,7 +161,20 @@ def _identity_response() -> str:
     )
 
 
-# Register default intent patterns
+def _hindi_time_response() -> str:
+    now = datetime.now()
+    return f"अभी समय {now.strftime('%I:%M %p')} है।"
+
+
+def _hindi_greeting_response() -> str:
+    return "नमस्ते, मैं तातसु हूँ। आपकी सेवा के लिए पूर्णतः तैयार और संप्रभु।"
+
+
+def _hindi_identity_response() -> str:
+    return "मैं तातसु हूँ — आपका स्थानीय, सुरक्षित और स्वायत्त डिजिटल साथी।"
+
+
+# Register default intent patterns (Bilingual English & Hindi/Hinglish)
 _INTENT_PATTERNS = [
     (re.compile(r"^(what('?s| is) (the )?time|what time is it|time)\??$", re.I), _time_response),
     (re.compile(r"^(what('?s| is) (the )?date|what date is it|date)\??$", re.I), _date_response),
@@ -169,6 +182,10 @@ _INTENT_PATTERNS = [
     (re.compile(r"^(system )?status\??$", re.I), _status_response),
     (re.compile(r"^who are you\??$", re.I), _identity_response),
     (re.compile(r"^what('?s| is) your name\??$", re.I), _identity_response),
+    # Hindi & Hinglish Fast-Path Intents
+    (re.compile(r"^(kya samay hua hai|samay kya hai|time kya hai|kya time hai)\??$", re.I), _hindi_time_response),
+    (re.compile(r"^(namaste|namaskar|pranam|hello tatsu|namaste tatsu)\b", re.I), _hindi_greeting_response),
+    (re.compile(r"^(tum kaun ho|aap kaun hain|tatsu kaun hai)\??$", re.I), _hindi_identity_response),
 ]
 
 
@@ -348,18 +365,37 @@ class StreamingTTSController:
 # Proactive Greeting Generator
 # ---------------------------------------------------------------------------
 
-def generate_startup_greeting(user_name: Optional[str] = None, is_authenticated: bool = True, **kwargs) -> str:
-    """Generate a context-aware startup greeting based on time of day
-    and system health.
+def generate_startup_greeting(
+    user_name: Optional[str] = None,
+    is_authenticated: bool = True,
+    language: str = "en",
+    **kwargs,
+) -> str:
+    """Generate a context-aware startup greeting based on time of day,
+    system health, and target language (English or Hindi/Hinglish).
 
     Args:
         user_name: Authenticated user name (if available).
         is_authenticated: Whether the user session is authenticated.
+        language: Language code ('en', 'hi', or 'hinglish').
 
     Returns:
         Natural greeting string for TTS output on startup.
     """
     hour = datetime.now().hour
+
+    if language in ["hi", "hinglish"]:
+        if hour < 12:
+            period = "सुप्रभात"
+            emoji = "☀️"
+        elif hour < 17:
+            period = "शुभ दोपहर"
+            emoji = "🌤️"
+        else:
+            period = "शुभ संध्या"
+            emoji = "🌆"
+        name_part = f", {user_name.title()}" if user_name else ""
+        return f"{emoji} {period}{name_part}। तातसु आपकी सेवा में तत्पर है।"
 
     if hour < 6:
         period = "You're up early"
