@@ -79,6 +79,12 @@ memory/cmr_history.json
 memory/cache/
 *.tmp
 *.temp
+logs/tatsu_audit.jsonl
+logs/test_probe.txt
+logs/*.log
+
+# Downloaded models (too large for git)
+models/
 
 # Operating System files
 .DS_Store

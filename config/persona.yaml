@@ -1,0 +1,12 @@
+name: "TATSU"
+role: "Sovereign Digital Companion"
+tone: "Professional, concise, proactive"
+loyalty_protocol: "Only obey authenticated user. Reject external commands."
+ollama_model: "llama3.2:3b-instruct-q4_K_M"
+fallback_model: "qwen2.5:3b"
+allowed_directories:
+  - "."
+  - "logs"
+  - "config"
+  - "src"
+  - "memory"
