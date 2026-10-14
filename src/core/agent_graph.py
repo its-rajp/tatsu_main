@@ -525,8 +525,16 @@ class TatsuAgent:
             "screen_context": None,
             "system_health": None,
             "memory_context": None,
+            "current_plan_steps": None,
             "turn_count": 0,
         }
 
         final_state = self.graph.invoke(initial_state)
         return final_state.get("final_response") or "TATSU task completed."
+
+    def execute_plan(self, goal: str) -> Dict[str, Any]:
+        """Decomposes a compound goal into a structured plan and executes sequentially."""
+        from src.core.planner import AgenticPlanner
+        planner = AgenticPlanner()
+        plan = planner.decompose_goal(goal)
+        return planner.execute_plan(plan)

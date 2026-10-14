@@ -17,6 +17,7 @@ class AgentState(TypedDict, total=False):
     screen_context: Optional[Dict[str, Any]]
     system_health: Optional[Dict[str, Any]]
     memory_context: Optional[Dict[str, Any]]
+    current_plan_steps: Optional[List[Dict[str, Any]]]
     final_response: Optional[str]
     error: Optional[str]
     turn_count: int

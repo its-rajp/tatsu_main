@@ -44,12 +44,20 @@ def audit_log(event_type: str, details: Dict[str, Any], status: str = "SUCCESS")
         f.write(json.dumps(payload) + "\n")
 
 
+class RiskLevel:
+    """Security risk classifications for tool operations."""
+    LOW = "LOW"        # Read-only ops: file_search, browser_extract, system_info, file_read
+    MEDIUM = "MEDIUM"  # Non-destructive write ops: file_archive, file_organize, browser_navigate, browser_click, file_write
+    HIGH = "HIGH"      # Code execution / System modification: shell_exec, run_python_script
+
+
 class TatsuTool(ABC):
     """Abstract Base Class for all TATSU tools."""
 
     name: str
     description: str
     args_schema: Type[BaseModel]
+    risk_level: str = RiskLevel.LOW
 
     @abstractmethod
     def execute(self, args: Dict[str, Any]) -> str:
@@ -95,6 +103,7 @@ class ShellExecTool(TatsuTool):
         "Destructive commands (rm, rmdir, dd, mkfs, sudo, shutdown, reboot) require confirm=True."
     )
     args_schema = ShellExecInput
+    risk_level = RiskLevel.HIGH
 
     DESTRUCTIVE_PATTERN = re.compile(
         r"\b(rm\s+-|rmdir\b|unlink\b|drop\s+database|format\b|dd\s+if|mkfs\b|del\s+/|erase\b|sudo\b|shutdown\b|reboot\b|poweroff\b|init\s+0\b)",
@@ -176,6 +185,7 @@ class FileReadTool(TatsuTool):
     name = "file_read"
     description = "Read the contents of a text file within allowed project directories."
     args_schema = FileReadInput
+    risk_level = RiskLevel.LOW
 
     def _resolve_safe_path(self, file_path: str) -> Optional[Path]:
         p = (BASE_DIR / file_path).resolve() if not os.path.isabs(file_path) else Path(file_path).resolve()
@@ -237,6 +247,7 @@ class FileWriteTool(TatsuTool):
         "Requires confirm=True if overwriting an existing file."
     )
     args_schema = FileWriteInput
+    risk_level = RiskLevel.MEDIUM
 
     def _resolve_safe_path(self, file_path: str) -> Optional[Path]:
         p = (BASE_DIR / file_path).resolve() if not os.path.isabs(file_path) else Path(file_path).resolve()
@@ -297,6 +308,7 @@ class SystemInfoTool(TatsuTool):
     name = "system_info"
     description = "Check current system health and hardware metrics: CPU %, Memory (RAM) %, and Disk usage %."
     args_schema = SystemInfoInput
+    risk_level = RiskLevel.LOW
 
     def execute(self, args: Dict[str, Any]) -> str:
         detailed = bool(args.get("detailed", False))
@@ -349,6 +361,230 @@ class SystemInfoTool(TatsuTool):
 
 
 # ---------------------------------------------------------------------------
+# 5. Python Sandbox Tool
+# ---------------------------------------------------------------------------
+
+class RunPythonScriptInput(BaseModel):
+    code: str = Field(..., description="Python source code to execute in sandbox.")
+    confirm: bool = Field(
+        default=False,
+        description="Required if code contains operations flagged as sensitive/destructive.",
+    )
+
+
+class RunPythonScriptTool(TatsuTool):
+    name = "run_python_script"
+    description = (
+        "Execute Python code in an isolated subprocess sandbox with resource constraints. "
+        "Captures stdout/stderr. Dangerous modules require confirm=True."
+    )
+    args_schema = RunPythonScriptInput
+    risk_level = RiskLevel.HIGH
+
+    def __init__(self):
+        self._sandbox = None
+
+    def _get_sandbox(self):
+        if self._sandbox is None:
+            from src.tools.python_sandbox import PythonSandbox
+            self._sandbox = PythonSandbox()
+        return self._sandbox
+
+    def execute(self, args: Dict[str, Any]) -> str:
+        code = args.get("code", "")
+        confirm = bool(args.get("confirm", False))
+        sandbox = self._get_sandbox()
+        res = sandbox.execute_code(code, confirm=confirm)
+
+        out_parts = []
+        if res.get("stdout"):
+            out_parts.append(f"STDOUT:\n{res['stdout']}")
+        if res.get("stderr"):
+            out_parts.append(f"STDERR:\n{res['stderr']}")
+        if not out_parts:
+            out_parts.append(f"(Script executed cleanly, exit code: {res.get('exit_code', 0)})")
+
+        status = "SUCCESS" if res.get("success") else ("BLOCKED" if res.get("exit_code") == 126 else "ERROR")
+        audit_log("TOOL_EXECUTION", {"tool": self.name, "exit_code": res.get("exit_code")}, status=status)
+        return "\n\n".join(out_parts)
+
+
+# ---------------------------------------------------------------------------
+# 6. Browser Control Tools
+# ---------------------------------------------------------------------------
+
+_BROWSER_INSTANCE = None
+
+
+def _get_browser():
+    global _BROWSER_INSTANCE
+    if _BROWSER_INSTANCE is None:
+        from src.tools.browser_control import BrowserAgent
+        _BROWSER_INSTANCE = BrowserAgent(headless=True)
+    return _BROWSER_INSTANCE
+
+
+class BrowserNavigateInput(BaseModel):
+    url: str = Field(..., description="URL or local HTML file path to navigate to.")
+
+
+class BrowserNavigateTool(TatsuTool):
+    name = "browser_navigate"
+    description = "Navigate local headless browser to a specified URL or HTML file."
+    args_schema = BrowserNavigateInput
+    risk_level = RiskLevel.MEDIUM
+
+    def execute(self, args: Dict[str, Any]) -> str:
+        url = args.get("url", "")
+        browser = _get_browser()
+        res = browser.navigate(url)
+        if res.get("success"):
+            msg = f"Navigated to '{res.get('url')}'. Title: '{res.get('title')}' (Status: {res.get('status_code')})"
+            audit_log("TOOL_EXECUTION", {"tool": self.name, "url": url}, status="SUCCESS")
+        else:
+            msg = f"Navigation failed: {res.get('error')}"
+            audit_log("TOOL_EXECUTION", {"tool": self.name, "url": url, "error": res.get("error")}, status="ERROR")
+        return msg
+
+
+class BrowserExtractInput(BaseModel):
+    selector: str = Field(default="body", description="CSS selector of element to extract text from.")
+
+
+class BrowserExtractTool(TatsuTool):
+    name = "browser_extract"
+    description = "Extract text from currently open browser page using a CSS selector."
+    args_schema = BrowserExtractInput
+    risk_level = RiskLevel.LOW
+
+    def execute(self, args: Dict[str, Any]) -> str:
+        selector = args.get("selector", "body")
+        browser = _get_browser()
+        text = browser.extract_text(selector=selector)
+        audit_log("TOOL_EXECUTION", {"tool": self.name, "selector": selector, "chars": len(text)}, status="SUCCESS")
+        return text
+
+
+class BrowserClickInput(BaseModel):
+    selector: str = Field(..., description="CSS selector of DOM element to click.")
+
+
+class BrowserClickTool(TatsuTool):
+    name = "browser_click"
+    description = "Simulate a user click on a browser DOM element identified by selector."
+    args_schema = BrowserClickInput
+    risk_level = RiskLevel.MEDIUM
+
+    def execute(self, args: Dict[str, Any]) -> str:
+        selector = args.get("selector", "")
+        browser = _get_browser()
+        res = browser.click_element(selector)
+        if res.get("success"):
+            msg = f"Clicked element '{selector}'. Current URL: {res.get('current_url')}"
+            audit_log("TOOL_EXECUTION", {"tool": self.name, "selector": selector}, status="SUCCESS")
+        else:
+            msg = f"Click failed: {res.get('error')}"
+            audit_log("TOOL_EXECUTION", {"tool": self.name, "selector": selector, "error": res.get('error')}, status="ERROR")
+        return msg
+
+
+# ---------------------------------------------------------------------------
+# 7. File Management Tools
+# ---------------------------------------------------------------------------
+
+_FILE_MANAGER_INSTANCE = None
+
+
+def _get_file_manager():
+    global _FILE_MANAGER_INSTANCE
+    if _FILE_MANAGER_INSTANCE is None:
+        from src.tools.file_manager import FileManager
+        _FILE_MANAGER_INSTANCE = FileManager()
+    return _FILE_MANAGER_INSTANCE
+
+
+class FileSearchInput(BaseModel):
+    pattern: str = Field(default="*", description="Glob search pattern, e.g. '*.pdf' or '*.py'.")
+    directory: str = Field(default=".", description="Directory to search recursively.")
+
+
+class FileSearchTool(TatsuTool):
+    name = "file_search"
+    description = "Search recursively for files matching a glob pattern within allowed directories."
+    args_schema = FileSearchInput
+    risk_level = RiskLevel.LOW
+
+    def execute(self, args: Dict[str, Any]) -> str:
+        pattern = args.get("pattern", "*")
+        directory = args.get("directory", ".")
+        fm = _get_file_manager()
+        try:
+            results = fm.search_files(pattern=pattern, directory=directory)
+            audit_log("TOOL_EXECUTION", {"tool": self.name, "pattern": pattern, "matches": len(results)}, status="SUCCESS")
+            return json.dumps(results, indent=2)
+        except Exception as e:
+            msg = f"Error during file search: {str(e)}"
+            audit_log("TOOL_EXECUTION", {"tool": self.name, "error": str(e)}, status="ERROR")
+            return msg
+
+
+class FileOrganizeInput(BaseModel):
+    directory: str = Field(..., description="Target directory to organize into category subfolders.")
+    criteria: str = Field(default="extension", description="Grouping criteria (default: 'extension').")
+    confirm: bool = Field(default=False, description="Confirmation required if moving more than 5 files.")
+
+
+class FileOrganizeTool(TatsuTool):
+    name = "file_organize"
+    description = "Organize loose files in a directory into category subfolders (documents, images, code, etc.)."
+    args_schema = FileOrganizeInput
+    risk_level = RiskLevel.MEDIUM
+
+    def execute(self, args: Dict[str, Any]) -> str:
+        directory = args.get("directory", "")
+        criteria = args.get("criteria", "extension")
+        confirm = bool(args.get("confirm", False))
+        fm = _get_file_manager()
+        try:
+            res = fm.organize_directory(directory=directory, criteria=criteria, confirm=confirm)
+            status = "BLOCKED" if "CONFIRMATION REQUIRED" in res else "SUCCESS"
+            audit_log("TOOL_EXECUTION", {"tool": self.name, "directory": directory}, status=status)
+            return res
+        except Exception as e:
+            msg = f"Error organizing directory: {str(e)}"
+            audit_log("TOOL_EXECUTION", {"tool": self.name, "error": str(e)}, status="ERROR")
+            return msg
+
+
+class FileArchiveInput(BaseModel):
+    file_list: List[str] = Field(..., description="List of file paths to compress into archive.")
+    destination_zip: str = Field(..., description="Path to output zip archive file.")
+    confirm: bool = Field(default=False, description="Confirmation required if archiving > 10 files.")
+
+
+class FileArchiveTool(TatsuTool):
+    name = "file_archive"
+    description = "Compress a list of files into a ZIP archive."
+    args_schema = FileArchiveInput
+    risk_level = RiskLevel.MEDIUM
+
+    def execute(self, args: Dict[str, Any]) -> str:
+        file_list = args.get("file_list", [])
+        destination_zip = args.get("destination_zip", "")
+        confirm = bool(args.get("confirm", False))
+        fm = _get_file_manager()
+        try:
+            res = fm.archive_files(file_list=file_list, destination_zip=destination_zip, confirm=confirm)
+            status = "BLOCKED" if "CONFIRMATION REQUIRED" in res else "SUCCESS"
+            audit_log("TOOL_EXECUTION", {"tool": self.name, "dest": destination_zip}, status=status)
+            return res
+        except Exception as e:
+            msg = f"Error creating archive: {str(e)}"
+            audit_log("TOOL_EXECUTION", {"tool": self.name, "error": str(e)}, status="ERROR")
+            return msg
+
+
+# ---------------------------------------------------------------------------
 # Global Registry Map
 # ---------------------------------------------------------------------------
 
@@ -357,4 +593,11 @@ AVAILABLE_TOOLS: Dict[str, TatsuTool] = {
     "file_read": FileReadTool(),
     "file_write": FileWriteTool(),
     "system_info": SystemInfoTool(),
+    "run_python_script": RunPythonScriptTool(),
+    "browser_navigate": BrowserNavigateTool(),
+    "browser_extract": BrowserExtractTool(),
+    "browser_click": BrowserClickTool(),
+    "file_search": FileSearchTool(),
+    "file_organize": FileOrganizeTool(),
+    "file_archive": FileArchiveTool(),
 }
