@@ -287,18 +287,19 @@ class HardwareBridge:
                 else:
                     device_obj.off()
 
-    def add_device(self, device_id: str, device_config: Dict[str, Any]) -> Dict[str, Any]:
+    def add_device(self, device_id: str, device_config: Dict[str, Any], overwrite: bool = True) -> Dict[str, Any]:
         """Register a new device dynamically.
 
         Args:
             device_id: Unique string identifier.
             device_config: Dict with at least 'name', 'type', 'state'.
+            overwrite: Whether to overwrite existing device. Default True.
 
         Returns:
             Success/error dict.
         """
         with self._lock:
-            if device_id in self._devices:
+            if device_id in self._devices and not overwrite:
                 return {"success": False, "error": f"Device '{device_id}' already exists."}
 
             required = {"name", "type", "state"}
@@ -308,6 +309,22 @@ class HardwareBridge:
             self._devices[device_id] = device_config
             self._save_state()
             return {"success": True, "device": device_id}
+
+    def remove_device(self, device_id: str) -> Dict[str, Any]:
+        """Remove a registered device dynamically.
+
+        Args:
+            device_id: Unique string identifier.
+
+        Returns:
+            Success/error dict.
+        """
+        with self._lock:
+            if device_id in self._devices:
+                del self._devices[device_id]
+                self._save_state()
+                return {"success": True, "removed": device_id}
+            return {"success": False, "error": f"Device '{device_id}' not found."}
 
     def cleanup(self) -> None:
         """Release GPIO resources on shutdown."""
